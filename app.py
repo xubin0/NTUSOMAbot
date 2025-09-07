@@ -1,4 +1,4 @@
-import os, json, uuid, datetime as dt, re, threading, asyncio, logging
+import os, json, uuid, datetime as dt, re, threading, asyncio, logging, time
 from dotenv import load_dotenv
 
 # ===================== LOGGING =====================
@@ -192,18 +192,6 @@ async def post_init(app: Application):
     me = await app.bot.get_me()
     log.info("Bot started as @%s (id=%s)", me.username, me.id)
 
-async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Do not reply; just log to aid debugging
-    if update.message:
-        log.info("Unknown command: %r", update.message.text)
-
-# Quiet trace (logs only; no chat output)
-async def trace_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message:
-        log.info("TRACE message: %r", update.message.text)
-    elif update.callback_query:
-        log.info("TRACE callback: %r", update.callback_query.data)
-
 def build_telegram_app() -> Application:
     app = (
         Application.builder()
@@ -233,20 +221,19 @@ def build_telegram_app() -> Application:
     )
     app.add_handler(conv, group=1)
 
-    # Unknown commands (after real commands)
+    # Unknown commands AFTER the specific ones
+    async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.message:
+            log.info("Unknown command: %r", update.message.text)
     app.add_handler(MessageHandler(filters.COMMAND, unknown_command), group=10)
-
-    # Final catch-all tracer (logs only)
-    app.add_handler(MessageHandler(filters.ALL, trace_all), group=99)
 
     app.add_error_handler(on_error)
     return app
 
 telegram_app = build_telegram_app()
 
-# ===================== PTB RUNNER =====================
+# ===================== PTB RUNNER (no polling) =====================
 PTB_LOOP = None
-PTB_READY = threading.Event()
 
 def _run_ptb():
     global PTB_LOOP
@@ -255,8 +242,7 @@ def _run_ptb():
 
     async def _init():
         await telegram_app.initialize()
-        await telegram_app.start()   # start internal consumers (no polling)
-        PTB_READY.set()
+        await telegram_app.start()  # start internal consumers, no polling
         log.info("PTB application started (webhook mode)")
 
     PTB_LOOP.run_until_complete(_init())
@@ -271,27 +257,28 @@ flask_app = Flask(__name__)
 def webhook():
     try:
         data = request.get_json(force=True, silent=False) or {}
-        kind = next((k for k in (
-            "message","edited_message","callback_query","my_chat_member",
-            "channel_post","edited_channel_post","inline_query","chosen_inline_result"
-        ) if k in data), "unknown")
-        log.info("Webhook got: %s", kind)
-
-        if not PTB_READY.is_set():
+        # Basic readiness wait to avoid race on cold start
+        if PTB_LOOP is None:
+            for _ in range(30):  # up to ~3s
+                time.sleep(0.1)
+                if PTB_LOOP is not None:
+                    break
+        if PTB_LOOP is None:
             log.error("PTB loop not ready yet")
             return "NOT READY", 503
 
         update = Update.de_json(data, telegram_app.bot)
 
+        # Directly dispatch the update on the PTB loop
         fut = asyncio.run_coroutine_threadsafe(
             telegram_app.process_update(update),
             PTB_LOOP
         )
 
+        # Log exceptions (won't block the webhook)
         def _done(f):
             try:
                 f.result()
-                log.info("Update processed")
             except Exception as e:
                 log.exception("process_update failed: %s", e)
 
