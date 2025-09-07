@@ -127,9 +127,9 @@ async def perfume_info_callback(update: Update, context: ContextTypes.DEFAULT_TY
     desc = PERFUME_DESC.get(name, "No description available yet.")
     # Show the description and keep the list as buttons below
     keyboard = [
-        [InlineKeyboardButton("Cedar Veil", callback_data="INFO|Cedar Veil")],
-        [InlineKeyboardButton("Musk Reverie", callback_data="INFO|Musk Reverie")],
-        [InlineKeyboardButton("Mythos Blanc", callback_data="INFO|Mythos Blanc")],
+        [InlineKeyboardButton("Cedar Veil(50ml)", callback_data="INFO|Cedar Veil")],
+        [InlineKeyboardButton("Musk Reverie(50ml)", callback_data="INFO|Musk Reverie")],
+        [InlineKeyboardButton("Mythos Blanc(50ml)", callback_data="INFO|Mythos Blanc")],
     ]
     await query.edit_message_text(
         f"**{name}**\n{desc}\n\nSelect another:",
@@ -163,9 +163,9 @@ async def ask_item(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data["order"]["phone"] = phone 
     keyboard = [
-        [InlineKeyboardButton("Cedar Veil", callback_data="Cedar Veil")],
-        [InlineKeyboardButton("Musk Reverie", callback_data="Musk Reverie")],
-        [InlineKeyboardButton("Mythos Blanc", callback_data="Mythos Blanc")],
+        [InlineKeyboardButton("Cedar Veil(50ml)", callback_data="Cedar Veil")],
+        [InlineKeyboardButton("Musk Reverie(50ml)", callback_data="Musk Reverie")],
+        [InlineKeyboardButton("Mythos Blanc(50ml)", callback_data="Mythos Blanc")],
     ]
     await update.message.reply_text("Choose your perfume:", reply_markup=InlineKeyboardMarkup(keyboard))
     return ASK_ITEM
@@ -229,9 +229,9 @@ async def ask_more(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if choice == "more_yes":
         # show perfume keyboard again
         keyboard = [
-            [InlineKeyboardButton("Cedar Veil", callback_data="Cedar Veil")],
-            [InlineKeyboardButton("Musk Reverie", callback_data="Musk Reverie")],
-            [InlineKeyboardButton("Mythos Blanc", callback_data="Mythos Blanc")],
+            [InlineKeyboardButton("Cedar Veil(50ml)", callback_data="Cedar Veil")],
+            [InlineKeyboardButton("Musk Reverie(50ml)", callback_data="Musk Reverie")],
+            [InlineKeyboardButton("Mythos Blanc(50ml)", callback_data="Mythos Blanc")],
         ]
         await query.edit_message_text("Choose your perfume:", reply_markup=InlineKeyboardMarkup(keyboard))
         return ASK_ITEM
