@@ -192,6 +192,10 @@ async def post_init(app: Application):
     me = await app.bot.get_me()
     log.info("Bot started as @%s (id=%s)", me.username, me.id)
 
+async def dbg_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    log.info("DBG saw command: %r from chat %s", update.message.text, update.effective_chat.id)
+    await update.message.reply_text(f"debug got {update.message.text}")
+
 def build_telegram_app() -> Application:
     app = (
         Application.builder()
@@ -199,6 +203,9 @@ def build_telegram_app() -> Application:
         .post_init(post_init)
         .build()
     )
+
+    # Debug command tap (group 0 so it runs before others)
+    app.add_handler(MessageHandler(filters.COMMAND, dbg_commands), group=0)
 
     conv = ConversationHandler(
         entry_points=[CommandHandler("order", order_start)],
@@ -238,15 +245,17 @@ threading.Thread(target=_run_ptb, daemon=True).start()
 
 # ===================== FLASK (WSGI) =====================
 flask_app = Flask(__name__)
+
 @flask_app.post("/webhook")
 def webhook():
     try:
         data = request.get_json(force=True, silent=False)
-        # quick visibility: show the update type
         if isinstance(data, dict) and "message" in data:
-            log.info("Webhook received message from chat %s", data["message"]["chat"]["id"])
+            log.info("Webhook received message: chat=%s text=%r",
+                     data["message"]["chat"]["id"], data["message"].get("text"))
         elif isinstance(data, dict) and "callback_query" in data:
-            log.info("Webhook received callback from user %s", data["callback_query"]["from"]["id"])
+            log.info("Webhook received callback: user=%s data=%r",
+                     data["callback_query"]["from"]["id"], data["callback_query"].get("data"))
         else:
             log.info("Webhook received update keys: %s", list(data.keys()) if isinstance(data, dict) else type(data))
 
@@ -261,7 +270,6 @@ def webhook():
             PTB_LOOP
         )
 
-        # surface any exception that happens inside PTB handlers
         def _log_done(f):
             try:
                 f.result()
@@ -272,7 +280,7 @@ def webhook():
         return "OK", 200
     except Exception as e:
         log.exception("Webhook error: %s", e)
-        return "BAD", 200  # still 200 to avoid retry storms
+        return "BAD", 200
         
 @flask_app.get("/")
 def health():
