@@ -189,6 +189,8 @@ async def post_init(app: Application):
         BotCommand("cancel","Cancel current order"),
         BotCommand("ping","Health check"),
     ])
+    me = await app.bot.get_me()
+    log.info("Bot started as @%s (id=%s)", me.username, me.id)
 
 def build_telegram_app() -> Application:
     app = (
@@ -236,24 +238,41 @@ threading.Thread(target=_run_ptb, daemon=True).start()
 
 # ===================== FLASK (WSGI) =====================
 flask_app = Flask(__name__)
-
 @flask_app.post("/webhook")
 def webhook():
     try:
         data = request.get_json(force=True, silent=False)
+        # quick visibility: show the update type
+        if isinstance(data, dict) and "message" in data:
+            log.info("Webhook received message from chat %s", data["message"]["chat"]["id"])
+        elif isinstance(data, dict) and "callback_query" in data:
+            log.info("Webhook received callback from user %s", data["callback_query"]["from"]["id"])
+        else:
+            log.info("Webhook received update keys: %s", list(data.keys()) if isinstance(data, dict) else type(data))
+
         update = Update.de_json(data, telegram_app.bot)
 
-        # Schedule processing on the PTB loop (thread-safe)
-        asyncio.run_coroutine_threadsafe(
+        if PTB_LOOP is None:
+            log.error("PTB loop not ready yet")
+            return "NOT READY", 503
+
+        fut = asyncio.run_coroutine_threadsafe(
             telegram_app.process_update(update),
             PTB_LOOP
         )
 
+        # surface any exception that happens inside PTB handlers
+        def _log_done(f):
+            try:
+                f.result()
+            except Exception as e:
+                log.exception("process_update failed: %s", e)
+        fut.add_done_callback(_log_done)
+
         return "OK", 200
     except Exception as e:
         log.exception("Webhook error: %s", e)
-        return "BAD", 200  # still 200 to avoid Telegram retry storms
-
+        return "BAD", 200  # still 200 to avoid retry storms
         
 @flask_app.get("/")
 def health():
