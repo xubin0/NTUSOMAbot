@@ -205,6 +205,9 @@ async def dbg_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         log.info("DBG all: update type=%s", update.to_dict().keys())
 
+async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    log.info("Unknown command: %s", update.message.text)
+
 
 
 def build_telegram_app() -> Application:
@@ -235,6 +238,7 @@ def build_telegram_app() -> Application:
         allow_reentry=True,
     )
     app.add_handler(conv, group=1)
+    app.add_handler(MessageHandler(filters.COMMAND, unknown_command), group=10)
     # Optional: super-verbose debug to confirm pipeline (remove later)
     # from telegram.ext import MessageHandler
     # app.add_handler(MessageHandler(filters.COMMAND, dbg_commands), group=0)
