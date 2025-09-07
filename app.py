@@ -216,7 +216,6 @@ def build_telegram_app() -> Application:
     )
 
     # 1) Register simple commands in group 0 (highest priority)# register it BEFORE others, group=0
-    app.add_handler(MessageHandler(filters.COMMAND, dbg_commands), group=0)
     app.add_handler(CommandHandler("ping", cmd_ping), group=0)
     app.add_handler(CommandHandler("start", cmd_start), group=0)
     app.add_handler(CommandHandler("help", cmd_help), group=0)
@@ -236,9 +235,6 @@ def build_telegram_app() -> Application:
         allow_reentry=True,
     )
     app.add_handler(conv, group=1)
-    # lowest priority so it never interferes
-    app.add_handler(MessageHandler(filters.ALL, dbg_all), group=99)
-
     # Optional: super-verbose debug to confirm pipeline (remove later)
     # from telegram.ext import MessageHandler
     # app.add_handler(MessageHandler(filters.COMMAND, dbg_commands), group=0)
