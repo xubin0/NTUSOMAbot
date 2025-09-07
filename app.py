@@ -204,9 +204,13 @@ def build_telegram_app() -> Application:
         .build()
     )
 
-    # Debug command tap (group 0 so it runs before others)
-    app.add_handler(MessageHandler(filters.COMMAND, dbg_commands), group=0)
+    # 1) Register simple commands in group 0 (highest priority)
+    app.add_handler(CommandHandler("ping", cmd_ping), group=0)
+    app.add_handler(CommandHandler("start", cmd_start), group=0)
+    app.add_handler(CommandHandler("help", cmd_help), group=0)
+    app.add_handler(CommandHandler("cancel", cancel), group=0)
 
+    # 2) Conversation goes in group 1 so it won't block top-level commands
     conv = ConversationHandler(
         entry_points=[CommandHandler("order", order_start)],
         states={
@@ -219,11 +223,12 @@ def build_telegram_app() -> Application:
         fallbacks=[CommandHandler("cancel", cancel)],
         allow_reentry=True,
     )
+    app.add_handler(conv, group=1)
 
-    app.add_handler(CommandHandler("ping", cmd_ping))
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("help", cmd_help))
-    app.add_handler(conv)
+    # Optional: super-verbose debug to confirm pipeline (remove later)
+    # from telegram.ext import MessageHandler
+    # app.add_handler(MessageHandler(filters.COMMAND, dbg_commands), group=0)
+
     app.add_error_handler(on_error)
     return app
 
