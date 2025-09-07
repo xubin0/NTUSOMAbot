@@ -221,13 +221,16 @@ def build_telegram_app() -> Application:
 telegram_app = build_telegram_app()
 
 # Background PTB runner so Flask/Gunicorn can serve webhook
+PTB_LOOP = None  # <-- add this global
+
 def _run_ptb():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(telegram_app.initialize())
-    loop.run_until_complete(telegram_app.start())
+    global PTB_LOOP
+    PTB_LOOP = asyncio.new_event_loop()
+    asyncio.set_event_loop(PTB_LOOP)
+    PTB_LOOP.run_until_complete(telegram_app.initialize())
+    PTB_LOOP.run_until_complete(telegram_app.start())
     log.info("PTB application started")
-    loop.run_forever()
+    PTB_LOOP.run_forever()
 
 threading.Thread(target=_run_ptb, daemon=True).start()
 
@@ -239,12 +242,19 @@ def webhook():
     try:
         data = request.get_json(force=True, silent=False)
         update = Update.de_json(data, telegram_app.bot)
-        telegram_app.update_queue.put_nowait(update)
+
+        # Schedule processing on the PTB loop (thread-safe)
+        asyncio.run_coroutine_threadsafe(
+            telegram_app.process_update(update),
+            PTB_LOOP
+        )
+
         return "OK", 200
     except Exception as e:
         log.exception("Webhook error: %s", e)
-        return "BAD", 200  # still 200 so Telegram doesn't retry storm
+        return "BAD", 200  # still 200 to avoid Telegram retry storms
 
+        
 @flask_app.get("/")
 def health():
     return "OK", 200
