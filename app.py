@@ -105,9 +105,9 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_perfume_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
-        [InlineKeyboardButton("Cedar Veil", callback_data="INFO|Cedar Veil")],
-        [InlineKeyboardButton("Musk Reverie", callback_data="INFO|Musk Reverie")],
-        [InlineKeyboardButton("Mythos Blanc", callback_data="INFO|Mythos Blanc")],
+        [InlineKeyboardButton("Cedar Veil(50ml)", callback_data="INFO|Cedar Veil")],
+        [InlineKeyboardButton("Musk Reverie(50ml)", callback_data="INFO|Musk Reverie")],
+        [InlineKeyboardButton("Mythos Blanc(50ml)", callback_data="INFO|Mythos Blanc")],
     ]
     await update.message.reply_text(
         "Tap a perfume to see its description:",
