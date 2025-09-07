@@ -263,13 +263,9 @@ def _run_ptb():
     async def _init():
         await telegram_app.initialize()
         await telegram_app.start()
-
-        # --- Kick off dispatcher workers without polling Telegram ---
-        if hasattr(telegram_app, "updater") and telegram_app.updater:
-            # monkey-patch start_polling to a no-op (so it won't call getUpdates)
-            telegram_app.updater.start_polling = lambda *a, **k: None
-
-        log.info("PTB application started (webhook mode, dispatcher active)")
+        # 👇 THIS is what was missing
+        asyncio.create_task(telegram_app.updater.start())
+        log.info("PTB application started (webhook consumer running)")
 
     PTB_LOOP.run_until_complete(_init())
     PTB_LOOP.run_forever()
