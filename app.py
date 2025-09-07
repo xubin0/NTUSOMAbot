@@ -196,6 +196,17 @@ async def dbg_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log.info("DBG saw command: %r from chat %s", update.message.text, update.effective_chat.id)
     await update.message.reply_text(f"debug got {update.message.text}")
 
+async def dbg_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # log what PTB sees after process_update
+    if update.message:
+        log.info("DBG all: text=%r chat=%s", update.message.text, update.effective_chat.id)
+    elif update.callback_query:
+        log.info("DBG all: callback data=%r from=%s", update.callback_query.data, update.effective_user.id)
+    else:
+        log.info("DBG all: update type=%s", update.to_dict().keys())
+
+
+
 def build_telegram_app() -> Application:
     app = (
         Application.builder()
@@ -204,7 +215,8 @@ def build_telegram_app() -> Application:
         .build()
     )
 
-    # 1) Register simple commands in group 0 (highest priority)
+    # 1) Register simple commands in group 0 (highest priority)# register it BEFORE others, group=0
+    app.add_handler(MessageHandler(filters.COMMAND, dbg_commands), group=0)
     app.add_handler(CommandHandler("ping", cmd_ping), group=0)
     app.add_handler(CommandHandler("start", cmd_start), group=0)
     app.add_handler(CommandHandler("help", cmd_help), group=0)
@@ -224,6 +236,8 @@ def build_telegram_app() -> Application:
         allow_reentry=True,
     )
     app.add_handler(conv, group=1)
+    # lowest priority so it never interferes
+    app.add_handler(MessageHandler(filters.ALL, dbg_all), group=99)
 
     # Optional: super-verbose debug to confirm pipeline (remove later)
     # from telegram.ext import MessageHandler
