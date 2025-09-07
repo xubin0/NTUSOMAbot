@@ -1,4 +1,4 @@
-import os, json, uuid, datetime as dt, re, threading, asyncio, logging, time
+import os, json, uuid, datetime as dt, re, threading, asyncio, logging
 from dotenv import load_dotenv
 
 # ===================== LOGGING =====================
@@ -23,7 +23,7 @@ from google.oauth2.service_account import Credentials
 from flask import Flask, request
 
 # ===================== ENV & CONFIG =====================
-load_dotenv()
+load_dotenv()  # harmless on Render
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 SHEET_ID = os.getenv("SHEET_ID")
 
@@ -192,6 +192,21 @@ async def post_init(app: Application):
     me = await app.bot.get_me()
     log.info("Bot started as @%s (id=%s)", me.username, me.id)
 
+async def dbg_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    log.info("DBG saw command: %r from chat %s", update.message.text, update.effective_chat.id)
+    await update.message.reply_text(f"debug got {update.message.text}")
+
+async def dbg_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # log what PTB sees after process_update
+    if update.message:
+        log.info("DBG all: text=%r chat=%s", update.message.text, update.effective_chat.id)
+    elif update.callback_query:
+        log.info("DBG all: callback data=%r from=%s", update.callback_query.data, update.effective_user.id)
+    else:
+        log.info("DBG all: update type=%s", update.to_dict().keys())
+
+
+
 def build_telegram_app() -> Application:
     app = (
         Application.builder()
@@ -200,13 +215,14 @@ def build_telegram_app() -> Application:
         .build()
     )
 
-    # Commands
+    # 1) Register simple commands in group 0 (highest priority)# register it BEFORE others, group=0
+    app.add_handler(MessageHandler(filters.COMMAND, dbg_commands), group=0)
     app.add_handler(CommandHandler("ping", cmd_ping), group=0)
     app.add_handler(CommandHandler("start", cmd_start), group=0)
     app.add_handler(CommandHandler("help", cmd_help), group=0)
     app.add_handler(CommandHandler("cancel", cancel), group=0)
 
-    # Conversation
+    # 2) Conversation goes in group 1 so it won't block top-level commands
     conv = ConversationHandler(
         entry_points=[CommandHandler("order", order_start)],
         states={
@@ -220,19 +236,20 @@ def build_telegram_app() -> Application:
         allow_reentry=True,
     )
     app.add_handler(conv, group=1)
+    # lowest priority so it never interferes
+    app.add_handler(MessageHandler(filters.ALL, dbg_all), group=99)
 
-    # Unknown commands AFTER the specific ones
-    async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if update.message:
-            log.info("Unknown command: %r", update.message.text)
-    app.add_handler(MessageHandler(filters.COMMAND, unknown_command), group=10)
+    # Optional: super-verbose debug to confirm pipeline (remove later)
+    # from telegram.ext import MessageHandler
+    # app.add_handler(MessageHandler(filters.COMMAND, dbg_commands), group=0)
 
     app.add_error_handler(on_error)
     return app
 
 telegram_app = build_telegram_app()
 
-# ===================== PTB RUNNER (no polling) =====================
+# Background PTB runner so Flask/Gunicorn can serve webhook
+# global
 PTB_LOOP = None
 
 def _run_ptb():
@@ -242,7 +259,7 @@ def _run_ptb():
 
     async def _init():
         await telegram_app.initialize()
-        await telegram_app.start()  # start internal consumers, no polling
+        await telegram_app.start()   # start internal consumers (no polling)
         log.info("PTB application started (webhook mode)")
 
     PTB_LOOP.run_until_complete(_init())
@@ -256,39 +273,25 @@ flask_app = Flask(__name__)
 @flask_app.post("/webhook")
 def webhook():
     try:
-        data = request.get_json(force=True, silent=False) or {}
-        # Basic readiness wait to avoid race on cold start
-        if PTB_LOOP is None:
-            for _ in range(30):  # up to ~3s
-                time.sleep(0.1)
-                if PTB_LOOP is not None:
-                    break
+        data = request.get_json(force=True, silent=False)
+        update = Update.de_json(data, telegram_app.bot)
+
         if PTB_LOOP is None:
             log.error("PTB loop not ready yet")
             return "NOT READY", 503
 
-        update = Update.de_json(data, telegram_app.bot)
-
-        # Directly dispatch the update on the PTB loop
-        fut = asyncio.run_coroutine_threadsafe(
-            telegram_app.process_update(update),
-            PTB_LOOP
+        # Enqueue update into PTB’s queue safely
+        PTB_LOOP.call_soon_threadsafe(
+            telegram_app.update_queue.put_nowait,
+            update
         )
-
-        # Log exceptions (won't block the webhook)
-        def _done(f):
-            try:
-                f.result()
-            except Exception as e:
-                log.exception("process_update failed: %s", e)
-
-        fut.add_done_callback(_done)
+        log.info("Update enqueued: %s", data.keys())
         return "OK", 200
 
     except Exception as e:
         log.exception("Webhook error: %s", e)
         return "BAD", 200
-
+        
 @flask_app.get("/")
 def health():
     return "OK", 200
