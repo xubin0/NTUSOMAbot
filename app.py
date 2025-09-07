@@ -20,7 +20,7 @@ load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 SHEET_ID = os.getenv("SHEET_ID")
-KEY_FILE = os.getenv("KEY_FILE", "somantu-2c5c352bcad8.json")  # local dev fallback
+KEY_FILE = os.getenv("KEY_FILE")  # local dev fallback
 MODE = os.getenv("MODE", "polling")  # "polling" (local) or "webhook" (Render/cloud)
 
 # Price list (unit prices) — edit here if your prices change
