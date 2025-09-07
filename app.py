@@ -59,11 +59,14 @@ def clean_int(txt: str):
         return False, None
 
 # Conversation states
-ASK_NAME, ASK_PHONE, ASK_ITEM, ASK_QTY, CONFIRM = range(5)
+# Conversation states
+ASK_NAME, ASK_PHONE, ASK_ITEM, ASK_QTY, ASK_MORE, CONFIRM = range(6)
+
 
 # ===================== HANDLERS =====================
 async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("pong ✅")
+
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log.info("/start from %s", update.effective_user.id)
@@ -80,9 +83,11 @@ async def order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "order_id": str(uuid.uuid4())[:8],
         "timestamp_utc": now_utc_iso(),
         "telegram_username": update.effective_user.username or update.effective_user.full_name,
+        "items": [],  # NEW: hold multiple items
     }
     await update.message.reply_text("Customer name?")
     return ASK_NAME
+
 
 async def ask_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["order"]["customer_name"] = update.message.text.strip()
@@ -111,11 +116,14 @@ async def item_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         item = query.data
         log.info("item_chosen: %s by %s", item, query.from_user.id)
 
-        context.user_data["order"]["item"] = item
-        context.user_data["order"]["price"] = PRICE_MAP.get(item, 0.0)
+        # NEW: hold current item until we get qty
+        context.user_data["current_item"] = {
+            "name": item,
+            "price": float(PRICE_MAP.get(item, 0.0)),
+        }
 
         await query.edit_message_text(
-            f"Selected: {item}\nUnit price: {context.user_data['order']['price']:.2f}\n\nQuantity? (e.g., 1)"
+            f"Selected: {item}\nUnit price: {context.user_data['current_item']['price']:.2f}\n\nQuantity? (e.g., 1)"
         )
         return ASK_QTY
     except Exception as e:
@@ -129,20 +137,61 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Please enter a valid quantity (whole number, e.g., 1).")
         return ASK_QTY
 
-    context.user_data["order"]["quantity"] = qty
+    cur = context.user_data.get("current_item")
+    if not cur:  # safety
+        await update.message.reply_text("Please choose a perfume first.")
+        return ASK_ITEM
+
+    cur = {**cur, "quantity": qty}
+    context.user_data["order"]["items"].append(cur)
+    context.user_data["current_item"] = None  # reset
+
+    # Running total
+    total = sum(i["price"] * i["quantity"] for i in context.user_data["order"]["items"])
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ Add another perfume", callback_data="more_yes")],
+        [InlineKeyboardButton("✅ Checkout", callback_data="more_no")],
+    ])
+    await update.message.reply_text(
+        f"Added: {cur['name']} × {cur['quantity']} = {cur['price']*cur['quantity']:.2f}\n"
+        f"Current total: {total:.2f}\n\nAdd another perfume?",
+        reply_markup=kb
+    )
+    return ASK_MORE
+
+async def ask_more(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    choice = query.data
+
+    if choice == "more_yes":
+        # show perfume keyboard again
+        keyboard = [
+            [InlineKeyboardButton("Cedar Veil", callback_data="Cedar Veil")],
+            [InlineKeyboardButton("Musk Reverie", callback_data="Musk Reverie")],
+            [InlineKeyboardButton("Mythos Blanc", callback_data="Mythos Blanc")],
+        ]
+        await query.edit_message_text("Choose your perfume:", reply_markup=InlineKeyboardMarkup(keyboard))
+        return ASK_ITEM
+
+    # choice == "more_no" → build final summary
     o = context.user_data["order"]
-    total = o["price"] * o["quantity"]
+    lines = []
+    total = 0.0
+    for i in o["items"]:
+        sub = i["price"] * i["quantity"]
+        total += sub
+        lines.append(f"• {i['name']} × {i['quantity']} @ {i['price']:.2f} = {sub:.2f}")
+
     summary = (
         "Please confirm your order:\n"
         f"• Name: {o['customer_name']}\n"
         f"• Phone: {o['address']}\n"
-        f"• Perfume: {o['item']}\n"
-        f"• Unit Price: {o['price']:.2f}\n"
-        f"• Quantity: {o['quantity']}\n"
-        f"• Estimated Total: {total:.2f}\n\n"
-        "Reply YES to confirm or NO to cancel."
+        + "\n".join(lines) +
+        f"\n\nTotal: {total:.2f}\n\nReply YES to confirm or NO to cancel."
     )
-    await update.message.reply_text(summary)
+    await query.edit_message_text(summary)
     return CONFIRM
 
 async def finalize(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -157,11 +206,13 @@ async def finalize(update: Update, context: ContextTypes.DEFAULT_TYPE):
     o = context.user_data["order"]
     try:
         ws = get_worksheet(SHEET_ID, "Orders")
-        ws.append_row([
-            o["order_id"], o["timestamp_utc"], o["telegram_username"],
-            o["customer_name"], o["address"], o["item"],
-            o["price"], o["quantity"], "NEW"
-        ], value_input_option="USER_ENTERED")
+        # NEW: one row per item
+        for i in o["items"]:
+            ws.append_row([
+                o["order_id"], o["timestamp_utc"], o["telegram_username"],
+                o["customer_name"], o["address"], i["name"],
+                i["price"], i["quantity"], "NEW"
+            ], value_input_option="USER_ENTERED")
         await update.message.reply_text(f"✅ Order placed! ID: {o['order_id']}")
     except Exception as e:
         log.exception("Sheet append failed")
@@ -229,6 +280,7 @@ def build_telegram_app() -> Application:
             ASK_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_item)],
             ASK_ITEM:  [CallbackQueryHandler(item_chosen)],
             ASK_QTY:   [MessageHandler(filters.TEXT & ~filters.COMMAND, confirm)],
+            ASK_MORE:  [CallbackQueryHandler(ask_more)],           # NEW
             CONFIRM:   [MessageHandler(filters.TEXT & ~filters.COMMAND, finalize)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
