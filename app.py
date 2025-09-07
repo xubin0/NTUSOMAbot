@@ -1,11 +1,11 @@
-import os, json, uuid, datetime as dt
+import os, json, uuid, datetime as dt, re
 from dotenv import load_dotenv
 
 # Telegram
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, ConversationHandler,
-    ContextTypes, filters
+    ContextTypes, CallbackQueryHandler, filters
 )
 
 # Google Sheets
@@ -22,6 +22,13 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 SHEET_ID = os.getenv("SHEET_ID")
 KEY_FILE = os.getenv("KEY_FILE", "somantu-2c5c352bcad8.json")  # local dev fallback
 MODE = os.getenv("MODE", "polling")  # "polling" (local) or "webhook" (Render/cloud)
+
+# Price list (unit prices) — edit here if your prices change
+PRICE_MAP = {
+    "Cedar Veil": 79,
+    "Musk Reverie": 79,
+    "Mythos Blanc": 79,
+}
 
 # ---------- GOOGLE SHEETS CLIENT (dual loader) ----------
 SCOPES = [
@@ -48,12 +55,10 @@ def get_worksheet(sheet_id: str, worksheet_name: str = "Orders"):
 def now_utc_iso() -> str:
     return dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
-def clean_number(txt: str):
-    """Return (ok, value). ok=False if parse fails."""
-    try:
-        return True, float(txt)
-    except:
-        return False, None
+PHONE_RE = re.compile(r"^\+?\d[\d\s\-]{6,}$")  # simple, permissive phone validator
+
+def valid_phone(s: str) -> bool:
+    return bool(PHONE_RE.match(s.strip()))
 
 def clean_int(txt: str):
     try:
@@ -62,14 +67,18 @@ def clean_int(txt: str):
         return False, None
 
 # Conversation states
-ASK_NAME, ASK_ADDRESS, ASK_ITEM, ASK_PRICE, ASK_QTY, CONFIRM = range(6)
+ASK_NAME, ASK_PHONE, ASK_ITEM, ASK_QTY, CONFIRM = range(5)
 
 # ---------- TELEGRAM HANDLERS ----------
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Welcome to SOMA orders. Type /order to place an order.\nType /cancel anytime to stop.")
+    await update.message.reply_text(
+        "Welcome to SOMA orders.\nUse /order to place an order.\nUse /cancel anytime to stop."
+    )
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("/order – start an order\n/cancel – cancel current order")
+    await update.message.reply_text(
+        "/order – start an order\n/cancel – cancel current order"
+    )
 
 async def order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Initialize the order
@@ -81,28 +90,43 @@ async def order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Customer name?")
     return ASK_NAME
 
-async def ask_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def ask_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["order"]["customer_name"] = update.message.text.strip()
-    await update.message.reply_text("Address?")
-    return ASK_ADDRESS
+    await update.message.reply_text("Phone number? (e.g., +65 9123 4567)")
+    return ASK_PHONE
 
 async def ask_item(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["order"]["address"] = update.message.text.strip()
-    await update.message.reply_text("Item?")
+    phone = update.message.text.strip()
+    if not valid_phone(phone):
+        await update.message.reply_text("Please enter a valid phone number (e.g., +65 9123 4567).")
+        return ASK_PHONE
+
+    # NOTE: Your sheet currently has 'address' column; we store phone there for now.
+    context.user_data["order"]["address"] = phone
+
+    # Ask for perfume using buttons
+    keyboard = [
+        [InlineKeyboardButton("Cedar Veil", callback_data="Cedar Veil")],
+        [InlineKeyboardButton("Musk Reverie", callback_data="Musk Reverie")],
+        [InlineKeyboardButton("Mythos Blanc", callback_data="Mythos Blanc")],
+    ]
+    await update.message.reply_text(
+        "Choose your perfume:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
     return ASK_ITEM
 
-async def ask_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["order"]["item"] = update.message.text.strip()
-    await update.message.reply_text("Price? (e.g., 29.90)")
-    return ASK_PRICE
+async def item_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    item = query.data
 
-async def ask_quantity(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ok, price = clean_number(update.message.text.strip())
-    if not ok or price < 0:
-        await update.message.reply_text("Please enter a valid price (e.g., 29.90).")
-        return ASK_PRICE
-    context.user_data["order"]["price"] = price
-    await update.message.reply_text("Quantity? (e.g., 1)")
+    context.user_data["order"]["item"] = item
+    context.user_data["order"]["price"] = PRICE_MAP.get(item, 0.0)
+
+    await query.edit_message_text(
+        f"Selected: {item}\nUnit price: {context.user_data['order']['price']:.2f}\n\nQuantity? (e.g., 1)"
+    )
     return ASK_QTY
 
 async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -113,13 +137,15 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["order"]["quantity"] = qty
 
     o = context.user_data["order"]
+    total = o["price"] * o["quantity"]
     summary = (
         "Please confirm your order:\n"
-        f"• Customer name: {o['customer_name']}\n"
-        f"• Address: {o['address']}\n"
-        f"• Item: {o['item']}\n"
-        f"• Price: {o['price']}\n"
-        f"• Quantity: {o['quantity']}\n\n"
+        f"• Name: {o['customer_name']}\n"
+        f"• Phone: {o['address']}\n"
+        f"• Perfume: {o['item']}\n"
+        f"• Unit Price: {o['price']:.2f}\n"
+        f"• Quantity: {o['quantity']}\n"
+        f"• Estimated Total: {total:.2f}\n\n"
         "Reply YES to confirm or NO to cancel."
     )
     await update.message.reply_text(summary)
@@ -146,9 +172,9 @@ async def finalize(update: Update, context: ContextTypes.DEFAULT_TYPE):
             o["timestamp_utc"],
             o["telegram_username"],
             o["customer_name"],
-            o["address"],
+            o["address"],         # currently storing PHONE here
             o["item"],
-            o["price"],
+            o["price"],           # unit price
             o["quantity"],
             "NEW"
         ], value_input_option="USER_ENTERED")
@@ -169,10 +195,9 @@ def build_app():
     conv = ConversationHandler(
         entry_points=[CommandHandler("order", order_start)],
         states={
-            ASK_NAME:    [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_address)],
-            ASK_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_item)],
-            ASK_ITEM:    [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_price)],
-            ASK_PRICE:   [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_quantity)],
+            ASK_NAME:    [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_phone)],
+            ASK_PHONE:   [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_item)],
+            ASK_ITEM:    [CallbackQueryHandler(item_chosen)],
             ASK_QTY:     [MessageHandler(filters.TEXT & ~filters.COMMAND, confirm)],
             CONFIRM:     [MessageHandler(filters.TEXT & ~filters.COMMAND, finalize)],
         },
@@ -203,8 +228,7 @@ def health():
 if __name__ == "__main__":
     if MODE == "webhook":
         # In production, run with: gunicorn app:flask_app
-        # Webhook will be set separately via Telegram API.
-        # If you run this directly in webhook mode, it only exposes Flask, not polling.
+        # Webhook will be set separately via Telegram API or post_init hook.
         flask_app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
     else:
         # Local development: polling
