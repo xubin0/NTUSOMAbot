@@ -12,28 +12,29 @@ from telegram.ext import (
 import gspread
 from google.oauth2.service_account import Credentials
 
-# Flask for webhook
+# Flask (webhook)
 from flask import Flask, request
 
-# ---------- ENV & CONFIG ----------
-load_dotenv()
+# ===================== ENV & CONFIG =====================
+load_dotenv()  # harmless on Render; will do nothing if .env isn't present
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 SHEET_ID = os.getenv("SHEET_ID")
 
-# Price list (unit prices)
+# Unit prices
 PRICE_MAP = {
     "Cedar Veil": 79,
     "Musk Reverie": 79,
     "Mythos Blanc": 79,
 }
 
-# ---------- GOOGLE SHEETS CLIENT ----------
+# Google scopes
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
 
+# ===================== SHEETS CLIENT =====================
 def get_worksheet(sheet_id: str, worksheet_name: str = "Orders"):
     sa_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
     if not sa_json:
@@ -43,12 +44,12 @@ def get_worksheet(sheet_id: str, worksheet_name: str = "Orders"):
     gc = gspread.authorize(creds)
     sh = gc.open_by_key(sheet_id)
     return sh.worksheet(worksheet_name)
-    
-# ---------- HELPERS ----------
+
+# ===================== HELPERS =====================
 def now_utc_iso() -> str:
     return dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
-PHONE_RE = re.compile(r"^\+?\d[\d\s\-]{6,}$")
+PHONE_RE = re.compile(r"^\+?\d[\d\s\-]{6,}$")  # simple phone validator
 
 def valid_phone(s: str) -> bool:
     return bool(PHONE_RE.match(s.strip()))
@@ -62,7 +63,7 @@ def clean_int(txt: str):
 # Conversation states
 ASK_NAME, ASK_PHONE, ASK_ITEM, ASK_QTY, CONFIRM = range(5)
 
-# ---------- TELEGRAM HANDLERS ----------
+# ===================== TELEGRAM HANDLERS =====================
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Welcome to SOMA orders.\nUse /order to place an order.\nUse /cancel anytime to stop."
@@ -92,7 +93,9 @@ async def ask_item(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not valid_phone(phone):
         await update.message.reply_text("Please enter a valid phone number (e.g., +65 9123 4567).")
         return ASK_PHONE
-    context.user_data["order"]["address"] = phone  # stored in 'address' column
+
+    # Store phone in your 'address' column per your current sheet schema
+    context.user_data["order"]["address"] = phone
 
     keyboard = [
         [InlineKeyboardButton("Cedar Veil", callback_data="Cedar Veil")],
@@ -109,6 +112,7 @@ async def item_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     item = query.data
+
     context.user_data["order"]["item"] = item
     context.user_data["order"]["price"] = PRICE_MAP.get(item, 0.0)
 
@@ -144,6 +148,7 @@ async def finalize(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if reply not in ("yes", "y", "no", "n"):
         await update.message.reply_text("Please reply YES to confirm or NO to cancel.")
         return CONFIRM
+
     if reply in ("no", "n"):
         await update.message.reply_text("Order cancelled.")
         return ConversationHandler.END
@@ -151,14 +156,16 @@ async def finalize(update: Update, context: ContextTypes.DEFAULT_TYPE):
     o = context.user_data["order"]
     try:
         ws = get_worksheet(SHEET_ID, "Orders")
+        # Column order expected by your sheet:
+        # order_id | timestamp_utc | telegram_username | customer_name | address | item | price | quantity | status
         ws.append_row([
             o["order_id"],
             o["timestamp_utc"],
             o["telegram_username"],
             o["customer_name"],
-            o["address"],
+            o["address"],          # phone stored in 'address'
             o["item"],
-            o["price"],
+            o["price"],            # unit price
             o["quantity"],
             "NEW"
         ], value_input_option="USER_ENTERED")
@@ -171,22 +178,32 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Cancelled. You can start again with /order.")
     return ConversationHandler.END
 
-# ---------- WIRING ----------
-def build_app():
+# ===================== APP WIRING =====================
+async def post_init(app: Application):
+    # Optional: show slash commands in Telegram UI
+    await app.bot.set_my_commands([
+        BotCommand("start", "Begin"),
+        BotCommand("order", "Place an order"),
+        BotCommand("help", "Help"),
+        BotCommand("cancel", "Cancel current order"),
+    ])
+
+def build_telegram_app() -> Application:
     app = (
         Application.builder()
         .token(TELEGRAM_TOKEN)
+        .post_init(post_init)
         .build()
     )
 
     conv = ConversationHandler(
         entry_points=[CommandHandler("order", order_start)],
         states={
-            ASK_NAME:    [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_phone)],
-            ASK_PHONE:   [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_item)],
-            ASK_ITEM:    [CallbackQueryHandler(item_chosen)],
-            ASK_QTY:     [MessageHandler(filters.TEXT & ~filters.COMMAND, confirm)],
-            CONFIRM:     [MessageHandler(filters.TEXT & ~filters.COMMAND, finalize)],
+            ASK_NAME:  [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_phone)],
+            ASK_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_item)],
+            ASK_ITEM:  [CallbackQueryHandler(item_chosen)],
+            ASK_QTY:   [MessageHandler(filters.TEXT & ~filters.COMMAND, confirm)],
+            CONFIRM:   [MessageHandler(filters.TEXT & ~filters.COMMAND, finalize)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
         allow_reentry=True,
@@ -197,9 +214,9 @@ def build_app():
     app.add_handler(conv)
     return app
 
-telegram_app = build_app()
+telegram_app = build_telegram_app()
 
-# ---- Run PTB in background thread ----
+# Run PTB in background thread so Gunicorn/Flask can serve webhook
 def _run_ptb():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -209,7 +226,7 @@ def _run_ptb():
 
 threading.Thread(target=_run_ptb, daemon=True).start()
 
-# ---------- FLASK APP ----------
+# ===================== FLASK (WSGI) =====================
 flask_app = Flask(__name__)
 
 @flask_app.post("/webhook")
