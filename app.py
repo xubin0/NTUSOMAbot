@@ -252,8 +252,6 @@ telegram_app = build_telegram_app()
 # global
 PTB_LOOP = None
 
-PTB_LOOP = None
-
 # ===================== PTB RUNNER =====================
 def _run_ptb():
     global PTB_LOOP
