@@ -281,20 +281,19 @@ def webhook():
             log.error("PTB loop not ready yet")
             return "NOT READY", 503
 
-        # Run the dispatcher on the PTB loop directly
         fut = asyncio.run_coroutine_threadsafe(
-            telegram_app.process_update(update),   # <- dispatch now
+            telegram_app.process_update(update),
             PTB_LOOP
         )
-        # Optional: surface any exception to logs
-        def _log_done(f):
+
+        def _done(f):
             try:
                 f.result()
+                log.info("Update processed")
             except Exception as e:
                 log.exception("process_update failed: %s", e)
-        fut.add_done_callback(lambda f: _log_done(f))
 
-        log.info("Update processed")
+        fut.add_done_callback(_done)
         return "OK", 200
 
     except Exception as e:
