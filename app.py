@@ -262,10 +262,8 @@ def _run_ptb():
 
     async def _init():
         await telegram_app.initialize()
-        await telegram_app.start()
-        # 👇 THIS is what was missing
-        asyncio.create_task(telegram_app.updater.start())
-        log.info("PTB application started (webhook consumer running)")
+        await telegram_app.start()   # start internal consumers (no polling)
+        log.info("PTB application started (webhook mode)")
 
     PTB_LOOP.run_until_complete(_init())
     PTB_LOOP.run_forever()
