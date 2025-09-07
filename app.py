@@ -31,18 +31,18 @@ SHEET_ID = os.getenv("SHEET_ID")
 # Perfume descriptions (edit freely)
 PERFUME_DESC = {
     "Cedar Veil": (
-        "Cool cedar meets warm amber, a forest breeze slipping through a city window. Calm, composed, and quietly powerful.\n "
+        "Cool cedar meets warm amber, a forest breeze slipping through a city window. Calm, composed, and quietly powerful.\n"
         "It doesn’t shout, but it’s impossible to ignore.\n"
         "keynotes: Cedarwood, Rose, Pink Pepper, Vetiver."
     ),
     "Musk Reverie": (
         "Creamy fig, cut with the edge of clean musk. Soft at first, then unforgettable.\n"
-        "Sweet enough to draw them in, dangerous enough to make them stay. \n "
+        "Sweet enough to draw them in, dangerous enough to make them stay. \n"
         "It lingers like a half-remembered dream, equal parts innocence and intrigue.\n"
         "keynotes: Ambrette Seed, Fig Leaf, Musk."
     ),
     "Mythos Blanc": (
-        "Coconut milk swirling with jasmine, grounded by incense and soft vanilla, a quiet escape in a bottle.\n "
+        "Coconut milk swirling with jasmine, grounded by incense and soft vanilla, a quiet escape in a bottle.\n"
         "Creamy but never sweet, airy but grounding.\n"
         "Like stepping into a sunlit temple by the sea, lifting your mood without asking for attention.\n"
         "keynotes: Milk, Jasmine, Incense, Vanilla."
@@ -139,7 +139,7 @@ async def perfume_info_callback(update: Update, context: ContextTypes.DEFAULT_TY
         [InlineKeyboardButton("Mythos Blanc(50ml)", callback_data="INFO|Mythos Blanc")],
     ]
     await query.edit_message_text(
-        f"**{name}**\n{desc}\n\nSelect another:",
+        f"**{name}**:\n{desc}\n\nSelect another:",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown"
     )
