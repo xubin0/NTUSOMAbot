@@ -35,7 +35,7 @@ SCOPES = [
 
 # ===================== SHEETS CLIENT =====================
 def get_worksheet(sheet_id: str, worksheet_name: str = "Orders"):
-    sa_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+    sa_json = os.getenv("KEY_FILE")
     if not sa_json:
         raise RuntimeError("GOOGLE_SERVICE_ACCOUNT_JSON not set in environment")
     info = json.loads(sa_json)
