@@ -256,10 +256,14 @@ def _run_ptb():
     global PTB_LOOP
     PTB_LOOP = asyncio.new_event_loop()
     asyncio.set_event_loop(PTB_LOOP)
-    PTB_LOOP.run_until_complete(telegram_app.initialize())
-    PTB_LOOP.run_until_complete(telegram_app.start())
-    # DO NOT start polling here. Webhook only.
-    log.info("PTB application started (webhook mode, update_queue consumer running)")
+
+    async def _init():
+        await telegram_app.initialize()
+        # drop_pending_updates avoids processing stale messages
+        await telegram_app.start(drop_pending_updates=True)
+        log.info("PTB application started (webhook consumer running)")
+
+    PTB_LOOP.run_until_complete(_init())
     PTB_LOOP.run_forever()
 
 threading.Thread(target=_run_ptb, daemon=True).start()
@@ -277,13 +281,14 @@ def webhook():
             log.error("PTB loop not ready yet")
             return "NOT READY", 503
 
-        # Thread-safe: schedule a put_nowait onto PTB's loop
+        # Enqueue update into PTB’s queue safely
         PTB_LOOP.call_soon_threadsafe(
             telegram_app.update_queue.put_nowait,
             update
         )
-
+        log.info("Update enqueued: %s", data.keys())
         return "OK", 200
+
     except Exception as e:
         log.exception("Webhook error: %s", e)
         return "BAD", 200
