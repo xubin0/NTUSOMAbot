@@ -92,7 +92,14 @@ async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log.info("/start from %s", update.effective_user.id)
     await update.message.reply_text(
-        "Welcome to SOMA orders.\nUse /order to place an order.\nUse /cancel anytime to stop."
+        "👋 Hello and welcome to SOMA Orders!\n\n"
+        "✨ Here you can browse and order our perfumes with just a few taps.\n\n"
+        "📌 Commands you can use:\n"
+        "• /order – Start placing a new order\n"
+        "• /perfume_list – View our perfumes and descriptions\n"
+        "• /help – See available commands\n"
+        "• /cancel – Cancel the current order anytime\n\n"
+        "Ready to get started? Just type /order 🌸"
     )
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
