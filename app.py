@@ -257,7 +257,6 @@ def _run_ptb():
     asyncio.set_event_loop(PTB_LOOP)
     PTB_LOOP.run_until_complete(telegram_app.initialize())
     PTB_LOOP.run_until_complete(telegram_app.start())
-    PTB_LOOP.create_task(telegram_app.updater.start_polling())  # <--- add this line
     log.info("PTB application started")
     PTB_LOOP.run_forever()
 
