@@ -59,9 +59,7 @@ def clean_int(txt: str):
         return False, None
 
 # Conversation states
-# Conversation states
-ASK_NAME, ASK_PHONE, ASK_ITEM, ASK_QTY, ASK_MORE, CONFIRM = range(6)
-
+ASK_NAME, ASK_PHONE, ASK_ITEM, ASK_QTY, ASK_MORE, CONFIRM, ASK_DELIVERY_METHOD, ASK_DELIVERY_ADDRESS = range(8)
 
 # ===================== HANDLERS =====================
 async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -100,7 +98,7 @@ async def ask_item(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Please enter a valid phone number (e.g., +65 9123 4567).")
         return ASK_PHONE
 
-    context.user_data["order"]["address"] = phone  # storing phone in 'address' column
+    context.user_data["order"]["phone"] = phone 
     keyboard = [
         [InlineKeyboardButton("Cedar Veil", callback_data="Cedar Veil")],
         [InlineKeyboardButton("Musk Reverie", callback_data="Musk Reverie")],
@@ -187,7 +185,7 @@ async def ask_more(update: Update, context: ContextTypes.DEFAULT_TYPE):
     summary = (
         "Please confirm your order:\n"
         f"• Name: {o['customer_name']}\n"
-        f"• Phone: {o['address']}\n"
+        f"• Phone: {o['phone']}\n"
         + "\n".join(lines) +
         f"\n\nTotal: {total:.2f}\n\nReply YES to confirm or NO to cancel."
     )
@@ -203,21 +201,71 @@ async def finalize(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Order cancelled.")
         return ConversationHandler.END
 
+    # YES → ask delivery method
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Self collect", callback_data="DELIVERY_SELF")],
+        [InlineKeyboardButton("Deliver", callback_data="DELIVERY_SHIP")],
+    ])
+    await update.message.reply_text(
+        "How would you like to receive your order?",
+        reply_markup=kb
+    )
+    return ASK_DELIVERY_METHOD
+
+
+async def delivery_method_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "DELIVERY_SELF":
+        context.user_data["order"]["delivery_method"] = "SELF"
+        context.user_data["order"]["delivery_address"] = ""
+        return await _save_and_finish(query.message, context)
+
+    if query.data == "DELIVERY_SHIP":
+        context.user_data["order"]["delivery_method"] = "DELIVER"
+        await query.edit_message_text("Please enter your delivery address:")
+        return ASK_DELIVERY_ADDRESS
+
+    await query.edit_message_text("Please choose a delivery option.")
+    return ASK_DELIVERY_METHOD
+
+
+async def delivery_address_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    addr = (update.message.text or "").strip()
+    if not addr:
+        await update.message.reply_text("Please enter a valid delivery address:")
+        return ASK_DELIVERY_ADDRESS
+
+    context.user_data["order"]["delivery_address"] = addr
+    return await _save_and_finish(update.message, context)
+
+
+async def _save_and_finish(msg, context: ContextTypes.DEFAULT_TYPE):
+    """Write one row per item to the sheet and end the conversation."""
     o = context.user_data["order"]
     try:
         ws = get_worksheet(SHEET_ID, "Orders")
-        # NEW: one row per item
         for i in o["items"]:
             ws.append_row([
-                o["order_id"], o["timestamp_utc"], o["telegram_username"],
-                o["customer_name"], o["address"], i["name"],
-                i["price"], i["quantity"], "NEW"
+                o["order_id"],              # Order ID
+                o["timestamp_utc"],         # Timestamp
+                o["telegram_username"],     # Telegram username
+                o["customer_name"],         # Customer name
+                o.get("phone", ""),         # Phone
+                o.get("delivery_method",""),# Delivery method
+                o.get("delivery_address",""),# Delivery address (optional)
+                i["name"],                  # Item name
+                i["price"],                 # Unit price
+                i["quantity"],              # Quantity
+                "NEW"                       # Status
             ], value_input_option="USER_ENTERED")
-        await update.message.reply_text(f"✅ Order placed! ID: {o['order_id']}")
+        await msg.reply_text(f"✅ Order placed! ID: {o['order_id']}")
     except Exception as e:
         log.exception("Sheet append failed")
-        await update.message.reply_text(f"❌ Failed to save your order. Error: {e}")
+        await msg.reply_text(f"❌ Failed to save your order. Error: {e}")
     return ConversationHandler.END
+
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Cancelled. You can start again with /order.")
@@ -280,8 +328,10 @@ def build_telegram_app() -> Application:
             ASK_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_item)],
             ASK_ITEM:  [CallbackQueryHandler(item_chosen)],
             ASK_QTY:   [MessageHandler(filters.TEXT & ~filters.COMMAND, confirm)],
-            ASK_MORE:  [CallbackQueryHandler(ask_more)],           # NEW
+            ASK_MORE:  [CallbackQueryHandler(ask_more)],
             CONFIRM:   [MessageHandler(filters.TEXT & ~filters.COMMAND, finalize)],
+            ASK_DELIVERY_METHOD: [CallbackQueryHandler(delivery_method_chosen)],
+            ASK_DELIVERY_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, delivery_address_received)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
         allow_reentry=True,
