@@ -249,7 +249,8 @@ def build_telegram_app() -> Application:
 telegram_app = build_telegram_app()
 
 # Background PTB runner so Flask/Gunicorn can serve webhook
-PTB_LOOP = None  # <-- add this global
+# global
+PTB_LOOP = None
 
 def _run_ptb():
     global PTB_LOOP
@@ -257,7 +258,8 @@ def _run_ptb():
     asyncio.set_event_loop(PTB_LOOP)
     PTB_LOOP.run_until_complete(telegram_app.initialize())
     PTB_LOOP.run_until_complete(telegram_app.start())
-    log.info("PTB application started")
+    # DO NOT start polling here. Webhook only.
+    log.info("PTB application started (webhook mode, update_queue consumer running)")
     PTB_LOOP.run_forever()
 
 threading.Thread(target=_run_ptb, daemon=True).start()
@@ -269,32 +271,17 @@ flask_app = Flask(__name__)
 def webhook():
     try:
         data = request.get_json(force=True, silent=False)
-        if isinstance(data, dict) and "message" in data:
-            log.info("Webhook received message: chat=%s text=%r",
-                     data["message"]["chat"]["id"], data["message"].get("text"))
-        elif isinstance(data, dict) and "callback_query" in data:
-            log.info("Webhook received callback: user=%s data=%r",
-                     data["callback_query"]["from"]["id"], data["callback_query"].get("data"))
-        else:
-            log.info("Webhook received update keys: %s", list(data.keys()) if isinstance(data, dict) else type(data))
-
         update = Update.de_json(data, telegram_app.bot)
 
         if PTB_LOOP is None:
             log.error("PTB loop not ready yet")
             return "NOT READY", 503
 
-        fut = asyncio.run_coroutine_threadsafe(
-            telegram_app.process_update(update),
-            PTB_LOOP
+        # Thread-safe: schedule a put_nowait onto PTB's loop
+        PTB_LOOP.call_soon_threadsafe(
+            telegram_app.update_queue.put_nowait,
+            update
         )
-
-        def _log_done(f):
-            try:
-                f.result()
-            except Exception as e:
-                log.exception("process_update failed: %s", e)
-        fut.add_done_callback(_log_done)
 
         return "OK", 200
     except Exception as e:
