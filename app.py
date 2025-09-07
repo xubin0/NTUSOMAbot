@@ -216,7 +216,6 @@ def build_telegram_app() -> Application:
     )
 
     # 1) Register simple commands in group 0 (highest priority)# register it BEFORE others, group=0
-    app.add_handler(MessageHandler(filters.COMMAND, dbg_commands), group=0)
     app.add_handler(CommandHandler("ping", cmd_ping), group=0)
     app.add_handler(CommandHandler("start", cmd_start), group=0)
     app.add_handler(CommandHandler("help", cmd_help), group=0)
