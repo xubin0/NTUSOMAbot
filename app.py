@@ -27,6 +27,29 @@ load_dotenv()  # harmless on Render
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 SHEET_ID = os.getenv("SHEET_ID")
 
+
+# Perfume descriptions (edit freely)
+PERFUME_DESC = {
+    "Cedar Veil": (
+        "Cool cedar meets warm amber, a forest breeze slipping through a city window. Calm, composed, and quietly powerful.\n "
+        "It doesn’t shout, but it’s impossible to ignore.\n"
+        "keynotes: Cedarwood, Rose, Pink Pepper, Vetiver."
+    ),
+    "Musk Reverie": (
+        "Creamy fig, cut with the edge of clean musk. Soft at first, then unforgettable.\n"
+        "Sweet enough to draw them in, dangerous enough to make them stay. \n "
+        "It lingers like a half-remembered dream, equal parts innocence and intrigue.\n"
+        "keynotes: Ambrette Seed, Fig Leaf, Musk."
+    ),
+    "Mythos Blanc": (
+        "Coconut milk swirling with jasmine, grounded by incense and soft vanilla, a quiet escape in a bottle.\n "
+        "Creamy but never sweet, airy but grounding.\n"
+        "Like stepping into a sunlit temple by the sea, lifting your mood without asking for attention.\n"
+        "keynotes: Milk, Jasmine, Incense, Vanilla."
+    ),
+}
+
+
 PRICE_MAP = {"Cedar Veil": 79, "Musk Reverie": 79, "Mythos Blanc": 79}
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -73,7 +96,47 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("/order – start an order\n/cancel – cancel current order")
+    await update.message.reply_text(
+        "/order - start an order\n"
+        "/perfume_list - view perfume descriptions\n"
+        "/cancel - cancel current order\n"
+        "/ping - health check"
+    )
+
+async def cmd_perfume_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("Cedar Veil", callback_data="INFO|Cedar Veil")],
+        [InlineKeyboardButton("Musk Reverie", callback_data="INFO|Musk Reverie")],
+        [InlineKeyboardButton("Mythos Blanc", callback_data="INFO|Mythos Blanc")],
+    ]
+    await update.message.reply_text(
+        "Tap a perfume to see its description:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+async def perfume_info_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    try:
+        _, name = query.data.split("|", 1)
+    except Exception:
+        await query.edit_message_text("Sorry, I didn’t recognise that perfume.")
+        return
+
+    desc = PERFUME_DESC.get(name, "No description available yet.")
+    # Show the description and keep the list as buttons below
+    keyboard = [
+        [InlineKeyboardButton("Cedar Veil", callback_data="INFO|Cedar Veil")],
+        [InlineKeyboardButton("Musk Reverie", callback_data="INFO|Musk Reverie")],
+        [InlineKeyboardButton("Mythos Blanc", callback_data="INFO|Mythos Blanc")],
+    ]
+    await query.edit_message_text(
+        f"**{name}**\n{desc}\n\nSelect another:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
+
 
 async def order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log.info("order_start by %s", update.effective_user.id)
@@ -284,10 +347,12 @@ async def post_init(app: Application):
     await app.bot.set_my_commands([
         BotCommand("start","Begin"),
         BotCommand("order","Place an order"),
+        BotCommand("perfume_list","View perfume descriptions"),
         BotCommand("help","Help"),
         BotCommand("cancel","Cancel current order"),
         BotCommand("ping","Health check"),
     ])
+
     me = await app.bot.get_me()
     log.info("Bot started as @%s (id=%s)", me.username, me.id)
 
@@ -319,6 +384,8 @@ def build_telegram_app() -> Application:
     app.add_handler(CommandHandler("start", cmd_start), group=0)
     app.add_handler(CommandHandler("help", cmd_help), group=0)
     app.add_handler(CommandHandler("cancel", cancel), group=0)
+    app.add_handler(CommandHandler("perfume_list", cmd_perfume_list), group=0)
+    app.add_handler(CallbackQueryHandler(perfume_info_callback, pattern=r"^INFO\|"), group=0)
 
     # 2) Conversation goes in group 1 so it won't block top-level commands
     conv = ConversationHandler(
