@@ -1,8 +1,8 @@
-import os, json, uuid, datetime as dt, re
+import os, json, uuid, datetime as dt, re, threading, asyncio
 from dotenv import load_dotenv
 
 # Telegram
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, ConversationHandler,
     ContextTypes, CallbackQueryHandler, filters
@@ -12,7 +12,7 @@ from telegram.ext import (
 import gspread
 from google.oauth2.service_account import Credentials
 
-# Webhook server (used in production)
+# Flask for webhook
 from flask import Flask, request
 
 # ---------- ENV & CONFIG ----------
@@ -20,42 +20,35 @@ load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 SHEET_ID = os.getenv("SHEET_ID")
-KEY_FILE = os.getenv("KEY_FILE")  # local dev fallback
-MODE = os.getenv("MODE", "polling")  # "polling" (local) or "webhook" (Render/cloud)
 
-# Price list (unit prices) — edit here if your prices change
+# Price list (unit prices)
 PRICE_MAP = {
     "Cedar Veil": 79,
     "Musk Reverie": 79,
     "Mythos Blanc": 79,
 }
 
-# ---------- GOOGLE SHEETS CLIENT (dual loader) ----------
+# ---------- GOOGLE SHEETS CLIENT ----------
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
 
 def get_worksheet(sheet_id: str, worksheet_name: str = "Orders"):
-    """
-    On Render: uses GOOGLE_SERVICE_ACCOUNT_JSON env var.
-    Locally: uses service account JSON file via KEY_FILE.
-    """
     sa_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
-    if sa_json:
-        info = json.loads(sa_json)
-        creds = Credentials.from_service_account_info(info, scopes=SCOPES)
-    else:
-        creds = Credentials.from_service_account_file(KEY_FILE, scopes=SCOPES)
+    if not sa_json:
+        raise RuntimeError("GOOGLE_SERVICE_ACCOUNT_JSON not set in environment")
+    info = json.loads(sa_json)
+    creds = Credentials.from_service_account_info(info, scopes=SCOPES)
     gc = gspread.authorize(creds)
     sh = gc.open_by_key(sheet_id)
     return sh.worksheet(worksheet_name)
-
+    
 # ---------- HELPERS ----------
 def now_utc_iso() -> str:
     return dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
-PHONE_RE = re.compile(r"^\+?\d[\d\s\-]{6,}$")  # simple, permissive phone validator
+PHONE_RE = re.compile(r"^\+?\d[\d\s\-]{6,}$")
 
 def valid_phone(s: str) -> bool:
     return bool(PHONE_RE.match(s.strip()))
@@ -81,7 +74,6 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Initialize the order
     context.user_data["order"] = {
         "order_id": str(uuid.uuid4())[:8],
         "timestamp_utc": now_utc_iso(),
@@ -100,11 +92,8 @@ async def ask_item(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not valid_phone(phone):
         await update.message.reply_text("Please enter a valid phone number (e.g., +65 9123 4567).")
         return ASK_PHONE
+    context.user_data["order"]["address"] = phone  # stored in 'address' column
 
-    # NOTE: Your sheet currently has 'address' column; we store phone there for now.
-    context.user_data["order"]["address"] = phone
-
-    # Ask for perfume using buttons
     keyboard = [
         [InlineKeyboardButton("Cedar Veil", callback_data="Cedar Veil")],
         [InlineKeyboardButton("Musk Reverie", callback_data="Musk Reverie")],
@@ -120,7 +109,6 @@ async def item_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     item = query.data
-
     context.user_data["order"]["item"] = item
     context.user_data["order"]["price"] = PRICE_MAP.get(item, 0.0)
 
@@ -156,32 +144,27 @@ async def finalize(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if reply not in ("yes", "y", "no", "n"):
         await update.message.reply_text("Please reply YES to confirm or NO to cancel.")
         return CONFIRM
-
     if reply in ("no", "n"):
         await update.message.reply_text("Order cancelled.")
         return ConversationHandler.END
 
-    # Save to Google Sheets
     o = context.user_data["order"]
     try:
         ws = get_worksheet(SHEET_ID, "Orders")
-        # Append in the EXACT column order:
-        # order_id | timestamp_utc | telegram_username | customer_name | address | item | price | quantity | status
         ws.append_row([
             o["order_id"],
             o["timestamp_utc"],
             o["telegram_username"],
             o["customer_name"],
-            o["address"],         # currently storing PHONE here
+            o["address"],
             o["item"],
-            o["price"],           # unit price
+            o["price"],
             o["quantity"],
             "NEW"
         ], value_input_option="USER_ENTERED")
         await update.message.reply_text(f"✅ Order placed! ID: {o['order_id']}")
     except Exception as e:
-        await update.message.reply_text(f"❌ Failed to save your order. Please try again later.\nError: {e}")
-
+        await update.message.reply_text(f"❌ Failed to save your order. Error: {e}")
     return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -190,7 +173,11 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------- WIRING ----------
 def build_app():
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app = (
+        Application.builder()
+        .token(TELEGRAM_TOKEN)
+        .build()
+    )
 
     conv = ConversationHandler(
         entry_points=[CommandHandler("order", order_start)],
@@ -212,7 +199,17 @@ def build_app():
 
 telegram_app = build_app()
 
-# Flask app for webhook deployments
+# ---- Run PTB in background thread ----
+def _run_ptb():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(telegram_app.initialize())
+    loop.run_until_complete(telegram_app.start())
+    loop.run_forever()
+
+threading.Thread(target=_run_ptb, daemon=True).start()
+
+# ---------- FLASK APP ----------
 flask_app = Flask(__name__)
 
 @flask_app.post("/webhook")
@@ -224,12 +221,3 @@ def webhook():
 @flask_app.get("/")
 def health():
     return "OK", 200
-
-if __name__ == "__main__":
-    if MODE == "webhook":
-        # In production, run with: gunicorn app:flask_app
-        # Webhook will be set separately via Telegram API or post_init hook.
-        flask_app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
-    else:
-        # Local development: polling
-        telegram_app.run_polling(drop_pending_updates=True)
